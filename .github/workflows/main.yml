@@ -1,4 +1,4 @@
-name: RDP
+name: Pure RDP via Tailscale
 
 on:
   workflow_dispatch:
@@ -9,206 +9,91 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Enable RDP & Firewall
         shell: powershell
         run: |
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name 'fDenyTSConnections' `
-            -Value 0 `
-            -Force
-
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'UserAuthentication' `
-            -Value 0 `
-            -Force
-
-          Set-ItemProperty `
-            -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name 'SecurityLayer' `
-            -Value 0 `
-            -Force
-
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-
-          netsh advfirewall firewall add rule `
-            name="RDP-Tailscale" `
-            dir=in `
-            action=allow `
-            protocol=TCP `
-            localport=3389
-
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall set rule group="Remote Desktop" new enable=Yes
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User
+      - name: Set RDP User Password
         shell: powershell
         run: |
-          $upper = [char[]](65..90)
-          $lower = [char[]](97..122)
-          $number = [char[]](48..57)
-          $special = [char[]](33..47)
+          $password = ConvertTo-SecureString "WindowsRDP#2025" -AsPlainText -Force
+          Set-LocalUser -Name "runneradmin" -Password $password
+          Write-Host "Password set for runneradmin"
 
-          $passwordChars = @()
-          $passwordChars += $upper | Get-Random -Count 4
-          $passwordChars += $lower | Get-Random -Count 4
-          $passwordChars += $number | Get-Random -Count 4
-          $passwordChars += $special | Get-Random -Count 4
-
-          $password = -join ($passwordChars | Sort-Object { Get-Random })
-
-          $securePassword = ConvertTo-SecureString `
-            $password `
-            -AsPlainText `
-            -Force
-
-          New-LocalUser `
-            -Name "RDPUser" `
-            -Password $securePassword `
-            -AccountNeverExpires
-
-          Add-LocalGroupMember `
-            -Group "Administrators" `
-            -Member "RDPUser"
-
-          Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -Member "RDPUser"
-
-          "RDP_USERNAME=RDPUser" >> $env:GITHUB_ENV
-          "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-
-      - name: Install Tailscale
-        shell: powershell
+      - name: Install Tailscale via Winget
+        shell: cmd
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP/tailscale.msi"
+          echo === Installing Tailscale via winget ===
+          winget install --id Tailscale.Tailscale --silent --accept-source-agreements --accept-package-agreements
+          echo === Waiting for install ===
+          timeout /t 25 /nobreak >nul
+          echo === Checking locations ===
+          if exist "C:\Program Files\Tailscale\tailscale.exe" echo FOUND in Program Files
+          if exist "C:\Program Files (x86)\Tailscale\tailscale.exe" echo FOUND in Program Files x86
 
-          Write-Host "Downloading Tailscale..."
-
-          Invoke-WebRequest `
-            -Uri $tsUrl `
-            -OutFile $installerPath
-
-          if (-not (Test-Path $installerPath)) {
-            Write-Error "Tailscale installer was not downloaded."
-            exit 1
-          }
-
-          Write-Host "Installing Tailscale..."
-
-          Start-Process `
-            -FilePath "msiexec.exe" `
-            -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
-            -Wait
-
-          Remove-Item $installerPath -Force
-
-          Write-Host "Tailscale installation complete. Waiting for files to register..."
-          Start-Sleep -Seconds 15
-
-          Write-Host "Checking Tailscale install path..."
-
-          if (Test-Path "C:\Program Files\Tailscale\tailscale.exe") {
-            Write-Host "Found: C:\Program Files\Tailscale\tailscale.exe"
-          }
-          elseif (Test-Path "C:\Program Files (x86)\Tailscale\tailscale.exe") {
-            Write-Host "Found: C:\Program Files (x86)\Tailscale\tailscale.exe"
-          }
-          else {
-            Write-Error "Tailscale executable not found after install."
-            exit 1
-          }
+      - name: Debug - Locate tailscale.exe
+        shell: cmd
+        run: |
+          echo === Searching common paths ===
+          dir "C:\Program Files\Tailscale\*.exe" /b 2>nul
+          dir "C:\Program Files (x86)\Tailscale\*.exe" /b 2>nul
+          dir "C:\ProgramData\Tailscale\*.exe" /b 2>nul
+          echo === where command ===
+          where tailscale 2>nul
+          echo === Registry check ===
+          reg query "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall" /s /f Tailscale 2>nul
 
       - name: Establish Tailscale Connection
-        shell: powershell
+        shell: cmd
         env:
           TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
+          set TS_EXE=
+          if exist "C:\Program Files\Tailscale\tailscale.exe" set TS_EXE=C:\Program Files\Tailscale\tailscale.exe
+          if exist "C:\Program Files (x86)\Tailscale\tailscale.exe" set TS_EXE=C:\Program Files (x86)\Tailscale\tailscale.exe
 
-          if (-not (Test-Path $tailscale)) {
-            $tailscale = "C:\Program Files (x86)\Tailscale\tailscale.exe"
-          }
+          if "%TS_EXE%"=="" (
+            echo ERROR: tailscale.exe not found
+            exit /b 1
+          )
 
-          if (-not (Test-Path $tailscale)) {
-            Write-Error "Tailscale executable not found."
-            exit 1
-          }
+          echo Using: %TS_EXE%
+          "%TS_EXE%" up --authkey=%TS_AUTHKEY% --hostname=gh-rdp-runner --accept-routes
 
-          Write-Host "Using Tailscale at: $tailscale"
+          if errorlevel 1 (
+            echo ERROR: Tailscale connection failed
+            exit /b 1
+          )
 
-          if (-not $env:TS_AUTHKEY) {
-            Write-Error "TAILSCALE_AUTH_KEY secret is missing."
-            exit 1
-          }
+          echo === Getting IP ===
+          timeout /t 10 /nobreak >nul
+          "%TS_EXE%" ip -4
 
-          Write-Host "Connecting to Tailscale..."
-
-          & $tailscale up `
-            --authkey="$env:TS_AUTHKEY" `
-            --hostname="gh-rdp-$($env:GITHUB_RUN_ID)" `
-            --accept-routes
-
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Tailscale failed to connect."
-            exit 1
-          }
-
-          $tsIP = $null
-
-          for ($i = 0; $i -lt 12; $i++) {
-            $tsIP = (& $tailscale ip -4 2>$null | Select-Object -First 1)
-
-            if ($tsIP) {
-              $tsIP = $tsIP.Trim()
-              break
-            }
-
-            Write-Host "Waiting for Tailscale IP..."
-            Start-Sleep -Seconds 5
-          }
-
-          if (-not $tsIP) {
-            Write-Error "Tailscale IP not assigned."
-            exit 1
-          }
-
-          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-
-          Write-Host "Tailscale IP assigned: $tsIP"
-
-      - name: Verify RDP Accessibility
+      - name: Show Connection Details & Keep Alive
         shell: powershell
         run: |
-          Write-Host "Testing RDP on $env:TAILSCALE_IP..."
-
-          $result = Test-NetConnection `
-            -ComputerName $env:TAILSCALE_IP `
-            -Port 3389 `
-            -WarningAction SilentlyContinue
-
-          if (-not $result.TcpTestSucceeded) {
-            Write-Error "RDP port 3389 is not reachable."
-            exit 1
+          $tsExe = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tsExe)) {
+            $tsExe = "C:\Program Files (x86)\Tailscale\tailscale.exe"
           }
 
-          Write-Host "RDP connectivity successful."
+          $tsIP = & $tsExe ip -4
+          $tsIP = ($tsIP | Select-Object -First 1).Trim()
 
-      - name: Display RDP Information
-        shell: powershell
-        run: |
           Write-Host ""
-          Write-Host "========== RDP ACCESS =========="
-          Write-Host "Address:  $env:TAILSCALE_IP"
-          Write-Host "Username: $env:RDP_USERNAME"
-          Write-Host "Password: $env:RDP_PASSWORD"
-          Write-Host "================================"
+          Write-Host "=============== RDP IS READY ==============="
+          Write-Host "IP Address : $tsIP"
+          Write-Host "Username   : runneradmin"
+          Write-Host "Password   : WindowsRDP#2025"
+          Write-Host "============================================"
           Write-Host ""
+          Write-Host "Connect via your Tailscale app -> RDP (mstsc)"
 
-      - name: Keep Runner Alive
-        shell: powershell
-        run: |
           while ($true) {
             Write-Host "RDP Active - $(Get-Date)"
             Start-Sleep -Seconds 300
