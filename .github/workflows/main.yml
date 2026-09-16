@@ -31,7 +31,7 @@ jobs:
           echo === Installing Tailscale via winget ===
           winget install --id Tailscale.Tailscale --silent --accept-source-agreements --accept-package-agreements
           echo === Waiting for install ===
-          timeout /t 25 /nobreak >nul
+          powershell -Command "Start-Sleep -Seconds 25"
           echo === Checking locations ===
           if exist "C:\Program Files\Tailscale\tailscale.exe" echo FOUND in Program Files
           if exist "C:\Program Files (x86)\Tailscale\tailscale.exe" echo FOUND in Program Files x86
@@ -42,11 +42,8 @@ jobs:
           echo === Searching common paths ===
           dir "C:\Program Files\Tailscale\*.exe" /b 2>nul
           dir "C:\Program Files (x86)\Tailscale\*.exe" /b 2>nul
-          dir "C:\ProgramData\Tailscale\*.exe" /b 2>nul
           echo === where command ===
           where tailscale 2>nul
-          echo === Registry check ===
-          reg query "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall" /s /f Tailscale 2>nul
 
       - name: Establish Tailscale Connection
         shell: cmd
@@ -70,8 +67,8 @@ jobs:
             exit /b 1
           )
 
-          echo === Getting IP ===
-          timeout /t 10 /nobreak >nul
+          echo === Waiting for IP ===
+          powershell -Command "Start-Sleep -Seconds 10"
           "%TS_EXE%" ip -4
 
       - name: Show Connection Details & Keep Alive
