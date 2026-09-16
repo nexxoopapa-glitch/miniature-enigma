@@ -107,29 +107,32 @@ jobs:
           Write-Host "Tailscale installation complete. Waiting for files to register..."
           Start-Sleep -Seconds 15
 
-          Write-Host "Searching for tailscale.exe..."
-          Get-ChildItem `
-            -Path "C:\Program Files","C:\Program Files (x86)" `
-            -Filter "tailscale.exe" `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty FullName
+          Write-Host "Checking Tailscale install path..."
+
+          if (Test-Path "C:\Program Files\Tailscale\tailscale.exe") {
+            Write-Host "Found: C:\Program Files\Tailscale\tailscale.exe"
+          }
+          elseif (Test-Path "C:\Program Files (x86)\Tailscale\tailscale.exe") {
+            Write-Host "Found: C:\Program Files (x86)\Tailscale\tailscale.exe"
+          }
+          else {
+            Write-Error "Tailscale executable not found after install."
+            exit 1
+          }
 
       - name: Establish Tailscale Connection
         shell: powershell
         env:
           TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          # Dynamically find tailscale.exe in both Program Files locations
-          $tailscale = Get-ChildItem `
-            -Path "C:\Program Files","C:\Program Files (x86)" `
-            -Filter "tailscale.exe" `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1 -ExpandProperty FullName
+          $tailscale = "C:\Program Files\Tailscale\tailscale.exe"
 
-          if (-not $tailscale -or -not (Test-Path $tailscale)) {
-            Write-Error "Tailscale executable not found in Program Files."
+          if (-not (Test-Path $tailscale)) {
+            $tailscale = "C:\Program Files (x86)\Tailscale\tailscale.exe"
+          }
+
+          if (-not (Test-Path $tailscale)) {
+            Write-Error "Tailscale executable not found."
             exit 1
           }
 
@@ -144,7 +147,7 @@ jobs:
 
           & $tailscale up `
             --authkey="$env:TS_AUTHKEY" `
-            --hostname="gh-rdp-$env:GITHUB_RUN_ID" `
+            --hostname="gh-rdp-$($env:GITHUB_RUN_ID)" `
             --accept-routes
 
           if ($LASTEXITCODE -ne 0) {
@@ -155,8 +158,7 @@ jobs:
           $tsIP = $null
 
           for ($i = 0; $i -lt 12; $i++) {
-            $tsIP = (& $tailscale ip -4 2>$null |
-              Select-Object -First 1)
+            $tsIP = (& $tailscale ip -4 2>$null | Select-Object -First 1)
 
             if ($tsIP) {
               $tsIP = $tsIP.Trim()
