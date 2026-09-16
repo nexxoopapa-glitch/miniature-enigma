@@ -104,17 +104,39 @@ jobs:
 
           Remove-Item $installerPath -Force
 
-          Write-Host "Tailscale installation complete."
+          Write-Host "Tailscale installation complete. Waiting for files to register..."
+          Start-Sleep -Seconds 15
+
+          Write-Host "Searching for tailscale.exe..."
+          Get-ChildItem `
+            -Path "C:\Program Files","C:\Program Files (x86)" `
+            -Filter "tailscale.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
 
       - name: Establish Tailscale Connection
         shell: powershell
         env:
           TS_AUTHKEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          $tailscale = "$env:ProgramFiles/Tailscale/tailscale.exe"
+          # Dynamically find tailscale.exe in both Program Files locations
+          $tailscale = Get-ChildItem `
+            -Path "C:\Program Files","C:\Program Files (x86)" `
+            -Filter "tailscale.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
 
-          if (-not (Test-Path $tailscale)) {
-            Write-Error "Tailscale executable not found."
+          if (-not $tailscale -or -not (Test-Path $tailscale)) {
+            Write-Error "Tailscale executable not found in Program Files."
+            exit 1
+          }
+
+          Write-Host "Using Tailscale at: $tailscale"
+
+          if (-not $env:TS_AUTHKEY) {
+            Write-Error "TAILSCALE_AUTH_KEY secret is missing."
             exit 1
           }
 
@@ -122,7 +144,8 @@ jobs:
 
           & $tailscale up `
             --authkey="$env:TS_AUTHKEY" `
-            --hostname="gh-rdp-$env:GITHUB_RUN_ID"
+            --hostname="gh-rdp-$env:GITHUB_RUN_ID" `
+            --accept-routes
 
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Tailscale failed to connect."
@@ -133,9 +156,10 @@ jobs:
 
           for ($i = 0; $i -lt 12; $i++) {
             $tsIP = (& $tailscale ip -4 2>$null |
-              Select-Object -First 1).Trim()
+              Select-Object -First 1)
 
             if ($tsIP) {
+              $tsIP = $tsIP.Trim()
               break
             }
 
@@ -150,7 +174,7 @@ jobs:
 
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-          Write-Host "Tailscale IP assigned."
+          Write-Host "Tailscale IP assigned: $tsIP"
 
       - name: Verify RDP Accessibility
         shell: powershell
